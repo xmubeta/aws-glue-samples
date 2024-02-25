@@ -10,11 +10,56 @@ from awsglue.dynamicframe import DynamicFrame
 from hive_metastore_migration import *
 
 
-def transform_df_to_catalog_import_schema(sql_context, glue_context, df_databases, df_tables, df_partitions):
-    df_databases_array = df_databases.select(df_databases['type'], array(df_databases['item']).alias('items'))
-    df_tables_array = df_tables.select(df_tables['type'], df_tables['database'],
+def transform_df_to_catalog_import_schema(sql_context, glue_context, df_databases, df_tables, df_partitions, filter):
+    
+    # Add filter feature here
+    df_databases_filter = df_databases.limit(0)
+    df_tables_filter = df_tables.limit(0)
+    df_partitions_filter = df_partitions.limit(0)
+    if filter:
+        filter_list = filter.split(',')
+        for filter_item in filter_list:
+            filter_db = filter_item.split('.')[0]
+            filter_table = filter_item.split('.')[1]
+            #filter db
+            df_databases_filter = df_databases_filter.union(df_databases.filter(col("item.name").like(filter_db)))
+            #filter table
+            df_tables_filter = df_tables_filter.union(df_tables.filter(
+                col("database").like(filter_db) & col("item.name").like(filter_table)))
+            #filter partition
+            df_partitions_filter = df_partitions_filter.union(df_partitions.filter(
+                col("database").like(filter_db) & col("table").like(filter_table)))
+    else:
+        df_databases_filter = df_databases
+        df_tables_filter = df_tables
+        df_partitions_filter = df_partitions
+
+
+    df_databases_filter = df_databases_filter.withColumn("temp", concat(col("item.name"))).dropDuplicates(subset=["temp"]).drop("temp")
+
+    df_databases_array = df_databases_filter.select(df_databases['type'], array(df_databases['item']).alias('items'))
+    
+    #df_databases_array.printSchema()
+    #df_databases_array.show(truncate=False)
+    
+    df_tables_filter = df_tables_filter.withColumn("temp", concat(col("database"),col("item.name"))).dropDuplicates(subset=["temp"]).drop("temp")
+
+
+    df_tables_array = df_tables_filter.select(df_tables['type'], df_tables['database'],
                                        array(df_tables['item']).alias('items'))
-    df_partitions_array_batched = batch_metastore_partitions(sql_context=sql_context, df_parts=df_partitions)
+    #df_tables_array.printSchema()
+    #df_tables_array.show(truncate=False)                                 
+    #df_partitions_filter.printSchema()
+    #df_partitions_filter.show(truncate=False)
+
+    df_partitions_filter = df_partitions_filter.withColumn("temp", 
+        concat(array(col("database"),col("table")),col("item.values"))).dropDuplicates(subset=["temp"]).drop("temp")
+
+    df_partitions_array_batched = batch_metastore_partitions(sql_context=sql_context, df_parts=df_partitions_filter)
+    
+    #df_partitions_array_batched.printSchema()
+    #df_partitions_array_batched.show(truncate=False)
+
     dyf_databases = DynamicFrame.fromDF(
         dataframe=df_databases_array, glue_ctx=glue_context, name='dyf_databases')
     dyf_tables = DynamicFrame.fromDF(
@@ -24,10 +69,10 @@ def transform_df_to_catalog_import_schema(sql_context, glue_context, df_database
     return dyf_databases, dyf_tables, dyf_partitions
 
 
-def import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region):
+def import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region, filter):
 
     (dyf_databases, dyf_tables, dyf_partitions) = transform_df_to_catalog_import_schema(
-        sql_context, glue_context, databases, tables, partitions)
+        sql_context, glue_context, databases, tables, partitions, filter)
 
     # load
     glue_context.write_dynamic_frame.from_options(
@@ -42,7 +87,7 @@ def import_datacatalog(sql_context, glue_context, datacatalog_name, databases, t
 
 
 def metastore_full_migration(sc, sql_context, glue_context, connection, datacatalog_name, db_prefix, table_prefix
-                             , region):
+                             , region, filter):
     # extract
     hive_metastore = HiveMetastore(connection, sql_context)
     hive_metastore.extract_metastore()
@@ -52,7 +97,7 @@ def metastore_full_migration(sc, sql_context, glue_context, connection, datacata
         sc, sql_context, db_prefix, table_prefix).transform(hive_metastore)
 
     #load
-    import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region)
+    import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region, filter)
 
 
 def metastore_import_from_s3(sql_context, glue_context,db_input_dir, tbl_input_dir, parts_input_dir,
@@ -80,6 +125,9 @@ def main():
     parser.add_argument('-D', '--database-input-path', required=False, help='An S3 path containing json files of metastore database entities')
     parser.add_argument('-T', '--table-input-path', required=False, help='An S3 path containing json files of metastore table entities')
     parser.add_argument('-P', '--partition-input-path', required=False, help='An S3 path containing json files of metastore partition entities')
+    parser.add_argument('-F', '--filter', 
+            required=False, 
+            help='Filter for database and table, use db.table to filter, support like wildcard: db%.table%, use comma for multiple filters, e.g. db1.table1,db2.table2,db3%.table3%') 
 
     options = get_options(parser, sys.argv)
     if options['mode'] == from_s3:
@@ -124,7 +172,8 @@ def main():
             db_prefix=options.get('database_prefix') or '',
             table_prefix=options.get('table_prefix') or '',
             datacatalog_name='datacatalog',
-            region=options.get('region') or 'us-east-1'
+            region=options.get('region') or 'us-east-1',
+            filter=options.get('filter') or ''
         )
 
 if __name__ == '__main__':
