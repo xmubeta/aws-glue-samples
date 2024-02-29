@@ -1493,6 +1493,8 @@ def validate_aws_regions(region):
         'us-east-1', # North Virginia
         'us-east-2', # Ohio
         'us-west-2', # Oregon
+        'cn-north-1', # Beijing
+        'cn-northwest-1' # Ningxia
     ]
 
     aws_regions = aws_glue_regions + [

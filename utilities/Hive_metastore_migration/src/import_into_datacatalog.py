@@ -10,7 +10,8 @@ from awsglue.dynamicframe import DynamicFrame
 from hive_metastore_migration import *
 
 
-def transform_df_to_catalog_import_schema(sql_context, glue_context, df_databases, df_tables, df_partitions, filter):
+def transform_df_to_catalog_import_schema(sql_context, glue_context, df_databases, df_tables, df_partitions,
+                                          db_prefix, table_prefix, filter):
     
     # Add filter feature here
     df_databases_filter = df_databases.limit(0)
@@ -21,6 +22,13 @@ def transform_df_to_catalog_import_schema(sql_context, glue_context, df_database
         for filter_item in filter_list:
             filter_db = filter_item.split('.')[0]
             filter_table = filter_item.split('.')[1]
+
+            print('filter: ' + filter_db + '.' + filter_table)
+            if db_prefix:
+                filter_db = db_prefix + filter_db
+            if table_prefix:
+                filter_table = table_prefix + filter_table
+            print('filter with prefix: ' + filter_db + '.' + filter_table)
             #filter db
             df_databases_filter = df_databases_filter.union(df_databases.filter(col("item.name").like(filter_db)))
             #filter table
@@ -35,14 +43,18 @@ def transform_df_to_catalog_import_schema(sql_context, glue_context, df_database
         df_partitions_filter = df_partitions
 
 
-    df_databases_filter = df_databases_filter.withColumn("temp", concat(col("item.name"))).dropDuplicates(subset=["temp"]).drop("temp")
+    df_databases_filter = df_databases_filter.withColumn("temp", 
+                                                         concat(col("item.name"))
+                                                         ).dropDuplicates(subset=["temp"]).drop("temp")
 
     df_databases_array = df_databases_filter.select(df_databases['type'], array(df_databases['item']).alias('items'))
     
     #df_databases_array.printSchema()
     #df_databases_array.show(truncate=False)
     
-    df_tables_filter = df_tables_filter.withColumn("temp", concat(col("database"),col("item.name"))).dropDuplicates(subset=["temp"]).drop("temp")
+    df_tables_filter = df_tables_filter.withColumn("temp", 
+                                                   concat(col("database"),col("item.name"))
+                                                   ).dropDuplicates(subset=["temp"]).drop("temp")
 
 
     df_tables_array = df_tables_filter.select(df_tables['type'], df_tables['database'],
@@ -69,10 +81,11 @@ def transform_df_to_catalog_import_schema(sql_context, glue_context, df_database
     return dyf_databases, dyf_tables, dyf_partitions
 
 
-def import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region, filter):
+def import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region,
+                       db_prefix, table_prefix, filter):
 
     (dyf_databases, dyf_tables, dyf_partitions) = transform_df_to_catalog_import_schema(
-        sql_context, glue_context, databases, tables, partitions, filter)
+        sql_context, glue_context, databases, tables, partitions,db_prefix, table_prefix, filter)
 
     # load
     glue_context.write_dynamic_frame.from_options(
@@ -97,7 +110,8 @@ def metastore_full_migration(sc, sql_context, glue_context, connection, datacata
         sc, sql_context, db_prefix, table_prefix).transform(hive_metastore)
 
     #load
-    import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region, filter)
+    import_datacatalog(sql_context, glue_context, datacatalog_name, databases, tables, partitions, region, 
+                       db_prefix, table_prefix, filter)
 
 
 def metastore_import_from_s3(sql_context, glue_context,db_input_dir, tbl_input_dir, parts_input_dir,
@@ -164,6 +178,7 @@ def main():
         )
     elif options['mode'] == from_jdbc:
         glue_context.extract_jdbc_conf(options['connection_name'])
+        print('db_prefix_1:'  + (options.get('database_prefix') or ''))
         metastore_full_migration(
             sc=sc,
             sql_context=sql_context,
